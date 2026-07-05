@@ -1,6 +1,6 @@
 # huckleberry-alexa
 
-I built this because I kept waking up at 3am to feed my daughter and forgetting to log it in Huckleberry. Opening an app with a baby on you is harder than it sounds.
+I built this because I kept waking up at 3am to feed my son and forgetting to log it in Huckleberry. Opening an app with a baby on you is harder than it sounds.
 
 This is a small FastAPI server that runs on your home machine and acts as a bridge between Alexa and the Huckleberry baby tracking app. You set up a custom Alexa skill that calls your server directly (via a Tailscale Funnel URL), and the server uses [py-huckleberry-api](https://github.com/Woyken/py-huckleberry-api) to log events to Huckleberry on your behalf.
 
@@ -23,7 +23,7 @@ The invocation name is "huckleberry". You can use one-shot invocations like:
 - "Alexa, ask huckleberry to log a pump session"
 - "Alexa, ask huckleberry to log a 10 minute 3 ounce pump"
 - "Alexa, ask huckleberry when was the last pump"
-- "Alexa, ask huckleberry she weighs 128 ounces" (log weight — say it in ounces)
+- "Alexa, ask huckleberry he weighs 128 ounces" (log weight — say it in ounces)
 - "Alexa, ask huckleberry to log tummy time"
 - "Alexa, ask huckleberry to log 5 minutes of tummy time"
 - "Alexa, ask huckleberry to log a bath"
