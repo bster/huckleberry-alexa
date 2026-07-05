@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 HUCKLEBERRY_TIMEZONE = os.getenv("HUCKLEBERRY_TIMEZONE", "America/New_York")
 
+ALEXA_SKILL_ID = "amzn1.ask.skill.9e90f9f8-d095-4378-bef9-5c9830317c3c"
+
 BottleType = Literal["Breast Milk", "Formula", "Tube Feeding", "Cow Milk", "Goat Milk", "Soy Milk", "Other"]
 
 _api: HuckleberryAPI | None = None
@@ -113,9 +115,15 @@ async def _do_last_feeding(child: int | str | None = None) -> dict:
     now = _now()
     intervals = await api.list_feed_intervals(
         child_uid,
-        start_time=now - timedelta(days=30),
+        start_time=now - timedelta(hours=48),
         end_time=now + timedelta(minutes=5),
     )
+    if not intervals:
+        intervals = await api.list_feed_intervals(
+            child_uid,
+            start_time=now - timedelta(days=7),
+            end_time=now + timedelta(minutes=5),
+        )
     if not intervals:
         return {"type": None, "started_at": None, "minutes_ago": None}
     latest = max(intervals, key=lambda i: float(i.start))
@@ -139,9 +147,15 @@ async def _do_last_diaper(child: int | str | None = None) -> dict:
     now = _now()
     intervals = await api.list_diaper_intervals(
         child_uid,
-        start_time=now - timedelta(days=30),
+        start_time=now - timedelta(hours=48),
         end_time=now + timedelta(minutes=5),
     )
+    if not intervals:
+        intervals = await api.list_diaper_intervals(
+            child_uid,
+            start_time=now - timedelta(days=7),
+            end_time=now + timedelta(minutes=5),
+        )
     if not intervals:
         return {"type": None, "logged_at": None, "minutes_ago": None}
     latest = max(intervals, key=lambda i: float(i.start))
@@ -236,9 +250,15 @@ async def _do_last_pump(child: int | str | None = None) -> dict:
     now = _now()
     intervals = await api.list_pump_intervals(
         child_uid,
-        start_time=now - timedelta(days=30),
+        start_time=now - timedelta(hours=48),
         end_time=now + timedelta(minutes=5),
     )
+    if not intervals:
+        intervals = await api.list_pump_intervals(
+            child_uid,
+            start_time=now - timedelta(days=7),
+            end_time=now + timedelta(minutes=5),
+        )
     if not intervals:
         return {"amount": None, "units": None, "logged_at": None, "minutes_ago": None}
     latest = max(intervals, key=lambda i: float(i.start))
@@ -634,6 +654,15 @@ async def alexa(request: Request) -> Any:
     except Exception:
         return _alexa_response("Sorry, I couldn't understand the request.")
 
+    # LaunchRequests may omit the top-level "session" key; fall back to context.System.
+    app_id = (
+        body.get("session", {}).get("application", {}).get("applicationId", "")
+        or body.get("context", {}).get("System", {}).get("application", {}).get("applicationId", "")
+    )
+    if app_id != ALEXA_SKILL_ID:
+        logger.warning("Rejected request with applicationId: %s", app_id)
+        raise HTTPException(status_code=403, detail="Invalid application ID")
+
     req = body.get("request", {})
     req_type = req.get("type", "")
 
@@ -760,6 +789,12 @@ async def alexa(request: Request) -> Any:
             if intent_name == "LogBathIntent":
                 await _do_log_activity("bath")
                 return _alexa_response("Logged bath time.")
+
+            if intent_name == "AMAZON.FallbackIntent":
+                return _alexa_response(
+                    "Sorry, I didn't catch that. Try saying something like "
+                    "'start feeding on the left' or 'log a diaper'."
+                )
 
             if intent_name == "AMAZON.HelpIntent":
                 return _alexa_response(
