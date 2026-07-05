@@ -1,0 +1,244 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "huckleberry",
+      "intents": [
+        {
+          "name": "StartFeedingIntent",
+          "slots": [
+            {
+              "name": "side",
+              "type": "FeedSide"
+            }
+          ],
+          "samples": [
+            "start feeding on the {side}",
+            "start feeding {side}",
+            "begin nursing on the {side}",
+            "nursing {side}",
+            "start nursing {side}",
+            "feeding started on the {side}",
+            "start a feeding on the {side} side"
+          ]
+        },
+        {
+          "name": "EndFeedingIntent",
+          "slots": [],
+          "samples": [
+            "end feeding",
+            "stop feeding",
+            "feeding done",
+            "done feeding",
+            "finish feeding",
+            "end nursing",
+            "stop nursing",
+            "nursing is done"
+          ]
+        },
+        {
+          "name": "LogDiaperIntent",
+          "slots": [
+            {
+              "name": "diaper_type",
+              "type": "DiaperType"
+            }
+          ],
+          "samples": [
+            "log a {diaper_type} diaper",
+            "log diaper {diaper_type}",
+            "{diaper_type} diaper",
+            "diaper change {diaper_type}",
+            "log a diaper",
+            "diaper change"
+          ]
+        },
+        {
+          "name": "LogBottleIntent",
+          "slots": [
+            {
+              "name": "bottle_amount",
+              "type": "AMAZON.NUMBER"
+            },
+            {
+              "name": "milk_type",
+              "type": "MilkType"
+            }
+          ],
+          "samples": [
+            "log a {bottle_amount} ounce {milk_type} bottle",
+            "log a {bottle_amount} ounce bottle",
+            "log a {milk_type} bottle",
+            "log a formula bottle",
+            "log a breast milk bottle",
+            "log a bottle",
+            "bottle feeding of {bottle_amount} ounces"
+          ]
+        },
+        {
+          "name": "StartSleepIntent",
+          "slots": [],
+          "samples": [
+            "start sleep",
+            "baby is sleeping",
+            "she fell asleep",
+            "he fell asleep",
+            "start nap",
+            "begin sleep",
+            "log sleep start"
+          ]
+        },
+        {
+          "name": "EndSleepIntent",
+          "slots": [],
+          "samples": [
+            "end sleep",
+            "baby woke up",
+            "she woke up",
+            "he woke up",
+            "stop sleep",
+            "wake up",
+            "nap is over",
+            "sleep is done"
+          ]
+        },
+        {
+          "name": "SwitchSideIntent",
+          "slots": [],
+          "samples": [
+            "switch sides",
+            "switch to the other side",
+            "other side",
+            "flip sides"
+          ]
+        },
+        {
+          "name": "CancelFeedingIntent",
+          "slots": [],
+          "samples": [
+            "cancel feeding",
+            "cancel nursing",
+            "nevermind on feeding",
+            "cancel that feeding"
+          ]
+        },
+        {
+          "name": "CancelSleepIntent",
+          "slots": [],
+          "samples": [
+            "cancel sleep",
+            "cancel nap",
+            "nevermind on sleep",
+            "cancel that nap"
+          ]
+        },
+        {
+          "name": "LogPumpIntent",
+          "slots": [
+            {
+              "name": "pump_amount",
+              "type": "AMAZON.NUMBER"
+            },
+            {
+              "name": "pump_duration",
+              "type": "AMAZON.NUMBER"
+            }
+          ],
+          "samples": [
+            "log a pump session",
+            "log pump",
+            "log {pump_amount} ounces from pump",
+            "log a {pump_duration} minute pump",
+            "log a {pump_duration} minute {pump_amount} ounce pump"
+          ]
+        },
+        {
+          "name": "LastPumpIntent",
+          "slots": [],
+          "samples": [
+            "when was the last pump",
+            "last pump",
+            "how long since the last pump",
+            "when did I last pump"
+          ]
+        },
+        {
+          "name": "LogWeightIntent",
+          "slots": [
+            {
+              "name": "weight_oz",
+              "type": "AMAZON.NUMBER"
+            }
+          ],
+          "samples": [
+            "log her weight as {weight_oz} ounces",
+            "she weighs {weight_oz} ounces",
+            "log weight {weight_oz} ounces",
+            "log {weight_oz} ounces"
+          ]
+        },
+        {
+          "name": "LogTummyTimeIntent",
+          "slots": [
+            {
+              "name": "duration",
+              "type": "AMAZON.NUMBER"
+            }
+          ],
+          "samples": [
+            "log tummy time",
+            "log {duration} minutes of tummy time",
+            "tummy time for {duration} minutes",
+            "tummy time"
+          ]
+        },
+        {
+          "name": "LogBathIntent",
+          "slots": [],
+          "samples": [
+            "log a bath",
+            "log bath",
+            "baby had a bath",
+            "bath time"
+          ]
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        }
+      ],
+      "types": [
+        {
+          "name": "FeedSide",
+          "values": [
+            { "name": { "value": "left", "synonyms": ["left side", "left breast"] } },
+            { "name": { "value": "right", "synonyms": ["right side", "right breast"] } }
+          ]
+        },
+        {
+          "name": "DiaperType",
+          "values": [
+            { "name": { "value": "wet", "synonyms": ["pee", "peed"] } },
+            { "name": { "value": "dirty", "synonyms": ["poo", "poop", "soiled", "number two"] } },
+            { "name": { "value": "both", "synonyms": ["wet and dirty", "pee and poop", "mixed"] } },
+            { "name": { "value": "dry", "synonyms": ["dry check", "nothing", "clean"] } }
+          ]
+        },
+        {
+          "name": "MilkType",
+          "values": [
+            { "name": { "value": "breast milk", "synonyms": ["breast", "pumped"] } },
+            { "name": { "value": "formula", "synonyms": ["formula milk"] } }
+          ]
+        }
+      ]
+    }
+  }
+}
