@@ -162,6 +162,16 @@
           ]
         },
         {
+          "name": "LastFeedingIntent",
+          "slots": [],
+          "samples": []
+        },
+        {
+          "name": "LastDiaperIntent",
+          "slots": [],
+          "samples": []
+        },
+        {
           "name": "LogWeightIntent",
           "slots": [
             {
@@ -203,6 +213,10 @@
         },
         {
           "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
           "samples": []
         },
         {
