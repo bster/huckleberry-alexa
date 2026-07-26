@@ -49,7 +49,14 @@
             "{diaper_type} diaper",
             "diaper change {diaper_type}",
             "log a diaper",
-            "diaper change"
+            "diaper change",
+            "log a {diaper_type}",
+            "log {diaper_type}",
+            "she had a {diaper_type}",
+            "he had a {diaper_type}",
+            "she {diaper_type}",
+            "he {diaper_type}",
+            "{diaper_type}"
           ]
         },
         {
@@ -244,7 +251,7 @@
           "name": "DiaperType",
           "values": [
             { "name": { "value": "wet", "synonyms": ["pee", "peed"] } },
-            { "name": { "value": "dirty", "synonyms": ["poo", "poop", "soiled", "number two"] } },
+            { "name": { "value": "dirty", "synonyms": ["poo", "poop", "pooped", "soiled", "number two"] } },
             { "name": { "value": "both", "synonyms": ["wet and dirty", "pee and poop", "mixed"] } },
             { "name": { "value": "dry", "synonyms": ["dry check", "nothing", "clean"] } }
           ]
