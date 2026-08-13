@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ _http_session: aiohttp.ClientSession | None = None
 _child_uid: str | None = None      # default child (from HUCKLEBERRY_CHILD_INDEX)
 _children: list[dict] = []         # [{index, cid, nickname}, ...]
 _last_event: dict | None = None
+_bootstrap_error: str | None = "not started"   # None once Huckleberry auth succeeds
 
 
 def _now() -> datetime:
@@ -43,8 +45,11 @@ def _record(event_type: str, details: dict | None = None) -> None:
 
 
 def _get_api() -> HuckleberryAPI:
-    if _api is None:
-        raise HTTPException(status_code=503, detail="Huckleberry API not initialized")
+    if _api is None or _bootstrap_error is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Huckleberry not connected ({_bootstrap_error or 'initializing'})",
+        )
     return _api
 
 
@@ -305,16 +310,9 @@ async def _do_log_activity(
     return {"mode": mode, "duration_minutes": duration_minutes, "child_uid": child_uid}
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _api, _http_session, _child_uid, _children
-    _http_session = aiohttp.ClientSession()
-    _api = HuckleberryAPI(
-        email=os.environ["HUCKLEBERRY_EMAIL"],
-        password=os.environ["HUCKLEBERRY_PASSWORD"],
-        timezone=HUCKLEBERRY_TIMEZONE,
-        websession=_http_session,
-    )
+async def _bootstrap() -> None:
+    """Authenticate to Huckleberry and cache the child list. Safe to retry."""
+    global _child_uid, _children, _bootstrap_error
     await _api.authenticate()
     user_doc = await _api.get_user()
     _children = [
@@ -323,7 +321,47 @@ async def lifespan(app: FastAPI):
     ]
     child_index = int(os.getenv("HUCKLEBERRY_CHILD_INDEX", "0"))
     _child_uid = user_doc.childList[child_index].cid
+    _bootstrap_error = None
+    logger.info("Huckleberry ready — default child %s", _child_uid)
+
+
+async def _bootstrap_forever() -> None:
+    """Keep retrying startup auth so a network outage never kills the process.
+
+    Authentication used to run inline in the lifespan hook, so any DNS failure
+    (Mac asleep, Wi-Fi not up yet at boot) raised, uvicorn exited, and launchd's
+    KeepAlive restarted straight into the same failure — a crash loop that only
+    ended when the network came back. Retrying in the background instead lets the
+    process stay up and heal on its own.
+    """
+    global _bootstrap_error
+    delay = 5
+    while True:
+        try:
+            await _bootstrap()
+            return
+        except Exception as err:  # noqa: BLE001 - any failure should be retried
+            # Trim the trailing ", url=..." — it carries the Firebase API key.
+            detail = str(err).split(", url=")[0][:200]
+            _bootstrap_error = f"{type(err).__name__}: {detail}"
+            logger.error("Huckleberry startup failed (%s); retrying in %ss", _bootstrap_error, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 300)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _api, _http_session
+    _http_session = aiohttp.ClientSession()
+    _api = HuckleberryAPI(
+        email=os.environ["HUCKLEBERRY_EMAIL"],
+        password=os.environ["HUCKLEBERRY_PASSWORD"],
+        timezone=HUCKLEBERRY_TIMEZONE,
+        websession=_http_session,
+    )
+    task = asyncio.create_task(_bootstrap_forever())
     yield
+    task.cancel()
     await _http_session.close()
 
 
@@ -867,6 +905,14 @@ async def alexa(request: Request) -> Any:
             return _alexa_response(f"Sorry, I don't know how to handle {intent_name}.")
 
         return _alexa_response("Sorry, I received an unexpected request type.")
+
+    except HTTPException as err:
+        if err.status_code == 503:
+            logger.error("Alexa request while Huckleberry is disconnected: %s", err.detail)
+            return _alexa_response(
+                "I can't reach Huckleberry right now. Please try again in a minute."
+            )
+        raise
 
     except Exception:
         logger.exception("Alexa handler error")
