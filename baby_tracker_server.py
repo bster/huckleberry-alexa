@@ -623,14 +623,19 @@ async def activity_log(req: ActivityLogRequest):
 # ---------------------------------------------------------------------------
 
 
-def _alexa_response(text: str, end_session: bool = True) -> dict:
-    return {
-        "version": "1.0",
-        "response": {
-            "outputSpeech": {"type": "PlainText", "text": text},
-            "shouldEndSession": end_session,
-        },
+def _alexa_response(text: str, end_session: bool = True, reprompt: str | None = None) -> dict:
+    response: dict[str, Any] = {
+        "outputSpeech": {"type": "PlainText", "text": text},
+        "shouldEndSession": end_session,
     }
+    if reprompt:
+        response["reprompt"] = {"outputSpeech": {"type": "PlainText", "text": reprompt}}
+    return {"version": "1.0", "response": response}
+
+
+def _alexa_reprompt(text: str) -> dict:
+    """Ask the user to say the value again instead of logging a guess."""
+    return _alexa_response(text, end_session=False, reprompt=text)
 
 
 def _format_oz(oz: float) -> str:
@@ -645,6 +650,49 @@ def _format_minutes(minutes: int) -> str:
     if mins == 0:
         return f"{hours} hour{'s' if hours != 1 else ''}"
     return f"{hours} hour{'s' if hours != 1 else ''} and {mins} minute{'s' if mins != 1 else ''}"
+
+
+def _slot_spoken(slots: dict, name: str) -> str | None:
+    """Raw transcription for a slot, or None when the user never filled it."""
+    raw = (slots.get(name) or {}).get("value")
+    return raw if raw else None
+
+
+def _resolve_slot(slots: dict, name: str, allowed: tuple[str, ...]) -> str | None:
+    """Canonical value for a custom slot, or None if it could not be resolved.
+
+    Alexa puts the raw transcription in slot["value"] ("mixed") and the value the
+    slot type maps it to under resolutions ("both"), so matching on the raw text
+    misses every synonym. Prefer the resolution and only trust the transcription
+    when it is already canonical.
+    """
+    slot = slots.get(name) or {}
+    for authority in slot.get("resolutions", {}).get("resolutionsPerAuthority", []):
+        if authority.get("status", {}).get("code") != "ER_SUCCESS_MATCH":
+            continue
+        for value in authority.get("values", []):
+            resolved = (value.get("value", {}).get("name") or "").lower()
+            if resolved in allowed:
+                return resolved
+    raw = (_slot_spoken(slots, name) or "").lower()
+    return raw if raw in allowed else None
+
+
+def _slot_number(slots: dict, name: str) -> float | None:
+    """Numeric slot value, or None when absent or not parseable as a number."""
+    raw = _slot_spoken(slots, name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+DIAPER_TYPES = ("wet", "dirty", "both", "dry")
+
+# "both" reads badly in a spoken confirmation ("Logged a both diaper").
+DIAPER_SPEECH = {"wet": "wet", "dirty": "dirty", "both": "mixed", "dry": "dry"}
 
 
 @app.post("/alexa")
@@ -681,10 +729,10 @@ async def alexa(request: Request) -> Any:
             slots = intent.get("slots", {})
 
             if intent_name == "StartFeedingIntent":
-                side_slot = slots.get("side", {})
-                side = (side_slot.get("value") or "left").lower()
-                if side not in ("left", "right"):
-                    side = "left"
+                side = _resolve_slot(slots, "side", ("left", "right"))
+                if side is None:
+                    logger.warning("Unresolved side slot: %r", _slot_spoken(slots, "side"))
+                    return _alexa_reprompt("Which side? Say left or right.")
                 await _do_feeding_start(side=side)
                 return _alexa_response(f"Starting {side} side feeding. Good luck!")
 
@@ -693,11 +741,15 @@ async def alexa(request: Request) -> Any:
                 return _alexa_response("Feeding ended and logged.")
 
             if intent_name == "LogBottleIntent":
-                amount_slot = slots.get("bottle_amount", {})
-                amount_val = amount_slot.get("value")
-                amount_oz = float(amount_val) if amount_val else None
-                milk_slot = (slots.get("milk_type", {}).get("value") or "").lower()
-                bottle_type = "Formula" if "formula" in milk_slot else "Breast Milk"
+                amount_oz = _slot_number(slots, "bottle_amount")
+                if amount_oz is None and _slot_spoken(slots, "bottle_amount"):
+                    return _alexa_reprompt("How many ounces was the bottle?")
+                milk = _resolve_slot(slots, "milk_type", ("breast milk", "formula"))
+                if milk is None and _slot_spoken(slots, "milk_type"):
+                    logger.warning("Unresolved milk_type slot: %r", _slot_spoken(slots, "milk_type"))
+                    return _alexa_reprompt("Was that breast milk or formula?")
+                # "log a bottle" with no milk type stated defaults to breast milk.
+                bottle_type = "Formula" if milk == "formula" else "Breast Milk"
                 await _do_feeding_bottle(amount_oz=amount_oz, bottle_type=bottle_type)
                 type_word = "formula" if bottle_type == "Formula" else "breast milk"
                 if amount_oz is not None:
@@ -726,12 +778,16 @@ async def alexa(request: Request) -> Any:
                 return _alexa_response(f"Last diaper was a {diaper_type} diaper, {ago} ago.")
 
             if intent_name == "LogDiaperIntent":
-                type_slot = slots.get("diaper_type", {})
-                diaper_type = (type_slot.get("value") or "wet").lower()
-                if diaper_type not in ("wet", "dirty", "both", "dry"):
-                    diaper_type = "wet"
+                diaper_type = _resolve_slot(slots, "diaper_type", DIAPER_TYPES)
+                if diaper_type is None:
+                    spoken = _slot_spoken(slots, "diaper_type")
+                    logger.warning("Unresolved diaper_type slot: %r", spoken)
+                    return _alexa_reprompt(
+                        "I didn't catch what kind of diaper that was. "
+                        "Say wet, dirty, mixed, or dry."
+                    )
                 await _do_diaper_log(diaper_type=diaper_type)
-                return _alexa_response(f"Logged a {diaper_type} diaper.")
+                return _alexa_response(f"Logged a {DIAPER_SPEECH[diaper_type]} diaper.")
 
             if intent_name == "StartSleepIntent":
                 await _do_sleep_start()
@@ -754,12 +810,12 @@ async def alexa(request: Request) -> Any:
                 return _alexa_response("Sleep session cancelled.")
 
             if intent_name == "LogPumpIntent":
-                amount_slot = slots.get("pump_amount", {})
-                amount_val = amount_slot.get("value")
-                amount_oz = float(amount_val) if amount_val else None
-                duration_slot = slots.get("pump_duration", {})
-                duration_val = duration_slot.get("value")
-                duration_minutes = float(duration_val) if duration_val else None
+                amount_oz = _slot_number(slots, "pump_amount")
+                if amount_oz is None and _slot_spoken(slots, "pump_amount"):
+                    return _alexa_reprompt("How many ounces did you pump?")
+                duration_minutes = _slot_number(slots, "pump_duration")
+                if duration_minutes is None and _slot_spoken(slots, "pump_duration"):
+                    return _alexa_reprompt("How many minutes was the pump session?")
                 await _do_pump_log(duration_minutes=duration_minutes, amount_oz=amount_oz)
                 if amount_oz is not None:
                     return _alexa_response(f"Logged a {_format_oz(amount_oz)} ounce pump session.")
@@ -773,16 +829,17 @@ async def alexa(request: Request) -> Any:
                 return _alexa_response(f"Last pump was {ago} ago.")
 
             if intent_name == "LogWeightIntent":
-                weight_slot = slots.get("weight_oz", {})
-                weight_val = weight_slot.get("value")
-                weight_oz = float(weight_val) if weight_val else None
+                weight_oz = _slot_number(slots, "weight_oz")
+                if weight_oz is None:
+                    # log_growth rejects an empty measurement, so ask rather than fail.
+                    return _alexa_reprompt("How many ounces does she weigh?")
                 await _do_log_growth(weight_oz=weight_oz)
-                return _alexa_response("Logged her weight.")
+                return _alexa_response(f"Logged her weight as {_format_oz(weight_oz)} ounces.")
 
             if intent_name == "LogTummyTimeIntent":
-                duration_slot = slots.get("duration", {})
-                duration_val = duration_slot.get("value")
-                duration_minutes = float(duration_val) if duration_val else None
+                duration_minutes = _slot_number(slots, "duration")
+                if duration_minutes is None and _slot_spoken(slots, "duration"):
+                    return _alexa_reprompt("How many minutes of tummy time?")
                 await _do_log_activity("tummyTime", duration_minutes)
                 return _alexa_response("Logged tummy time.")
 
