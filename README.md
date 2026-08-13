@@ -8,7 +8,18 @@ This is a small FastAPI server that runs on your home machine and acts as a brid
 
 ## What you can say
 
-The invocation name is "huckleberry". You can use one-shot invocations like:
+The invocation name is **"huckleberry"** — say "ask huckleberry to...". This is
+independent of whatever the skill is titled in the Alexa developer console (it's
+currently named "Baby Tracker" there, which is a misleading thing to go looking for —
+the console title never appears in speech, only the invocation name does).
+
+**Say "ask", not "tell."** "Alexa, tell huckleberry to log a wet diaper" does not
+reach this skill — Alexa's built-in Communications feature intercepts "tell
+\<name\> to..." as an attempt to send a message to a contact named "huckleberry" and
+never routes it to a custom skill at all. Always use "ask" (or "open huckleberry"
+first, then talk to it directly). This has tripped up testing more than once.
+
+You can use one-shot invocations like:
 
 - "Alexa, ask huckleberry to start feeding on the left"
 - "Alexa, ask huckleberry to end feeding"
@@ -93,6 +104,73 @@ curl https://your-machine.tailnet.ts.net/status
 ### 5. Enable the skill
 
 In the Alexa app on your phone: More → Skills & Games → Your Skills → Dev tab → find the skill → enable it.
+
+## Troubleshooting
+
+If a voice command isn't working, check things in this order:
+
+1. **Is the server up and connected to Huckleberry?**
+   ```bash
+   curl -s localhost:8765/status | python3 -m json.tool
+   ```
+   `"ok": true` and `"huckleberry": "connected"` means the server itself is healthy.
+   `last_alexa` shows the last request Alexa actually delivered (or `null` if none
+   ever arrived — a sign the problem is upstream of this machine entirely, e.g.
+   endpoint URL, Tailscale, or the "ask" vs "tell" issue above). `tailscale_hostname`
+   shows whether the public endpoint currently matches what the Alexa skill is
+   configured for — see below if `matches` is `false`.
+
+2. **Is the public endpoint reachable at all?** If `/status` looks fine locally but
+   Alexa still gets no response, the public hostname may not be resolving. See
+   "Tailscale hostname" below — the fix is usually `tailscale down && tailscale up`.
+
+3. **Did you say "ask" and not "tell"?** See the invocation note above — this is the
+   most common false alarm.
+
+## Tailscale hostname
+
+The Alexa skill's HTTPS endpoint is a URL hardcoded in the Amazon developer console
+to this machine's Tailscale Funnel hostname — currently:
+
+```
+https://benss-mac-mini-1.tailbded15.ts.net/alexa
+```
+
+Tailscale can silently re-register this Mac under a **different** hostname (e.g.
+appending `-1`) without the node ever going offline. This already happened once: the
+daemon looked healthy, `tailscale status` showed "Running", the server's own
+`/status` looked fine — but Amazon's servers couldn't reach the old hostname anymore,
+and the skill failed with no local symptom pointing at Tailscale at all.
+
+**You'll now find out immediately instead of by accident.** The server checks its own
+Tailscale hostname against `EXPECTED_TAILSCALE_HOSTNAME` on startup and every 30
+minutes, and:
+- logs a loud `ERROR` line (visible in the launchd log) if they've diverged
+- surfaces it at `GET /status` → `tailscale_hostname: {expected, actual, matches}`
+
+**If they diverge, fix it in this order:**
+1. Confirm the new hostname: `tailscale status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'])"` (or just check `/status`)
+2. Update the Alexa skill's endpoint — developer console → **Build → Endpoint** →
+   paste `https://<new-hostname>/alexa` → **Save Endpoints**. (Not "Build Model" —
+   that's only needed for interaction-model changes, not endpoint URL changes.)
+3. Update the expected hostname so the server stops alerting: either set
+   `EXPECTED_TAILSCALE_HOSTNAME=<new-hostname>` in `.env`, or edit the default in
+   `baby_tracker_server.py`, then restart the service:
+   ```bash
+   launchctl kickstart -k gui/$(id -u)/com.local.babytracker
+   ```
+
+**Will the underlying re-registration happen again?** Possibly — the exact trigger
+(stale daemon control-plane state after weeks of uptime, resolved here with
+`tailscale down && tailscale up`) isn't something this project can prevent from the
+client side, and it isn't a well-documented "runs every N days" Tailscale failure
+mode either, so there's no schedule to defend against. If it does recur, the fix is
+the same one-liner:
+```bash
+tailscale down && tailscale up
+```
+The difference now is you'll be told immediately (loud log line + `/status`) instead
+of finding out next time you happen to test the skill.
 
 ## Notes
 
