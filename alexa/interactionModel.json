@@ -55,8 +55,7 @@
             "she had a {diaper_type}",
             "he had a {diaper_type}",
             "she {diaper_type}",
-            "he {diaper_type}",
-            "{diaper_type}"
+            "he {diaper_type}"
           ]
         },
         {
@@ -171,12 +170,31 @@
         {
           "name": "LastFeedingIntent",
           "slots": [],
-          "samples": []
+          "samples": [
+            "when was the last feeding",
+            "last feeding",
+            "when did she last eat",
+            "when did he last eat",
+            "how long since the last feeding",
+            "when was she last fed",
+            "when was he last fed",
+            "when did she eat last",
+            "when did he eat last"
+          ]
         },
         {
           "name": "LastDiaperIntent",
           "slots": [],
-          "samples": []
+          "samples": [
+            "when was the last diaper",
+            "last diaper",
+            "when was the last diaper change",
+            "how long since the last diaper",
+            "when was she last changed",
+            "when was he last changed",
+            "when did I last change her",
+            "when did I last change him"
+          ]
         },
         {
           "name": "LogWeightIntent",
@@ -250,10 +268,37 @@
         {
           "name": "DiaperType",
           "values": [
-            { "name": { "value": "wet", "synonyms": ["pee", "peed"] } },
-            { "name": { "value": "dirty", "synonyms": ["poo", "poop", "pooped", "soiled", "number two"] } },
-            { "name": { "value": "both", "synonyms": ["wet and dirty", "pee and poop", "mixed"] } },
-            { "name": { "value": "dry", "synonyms": ["dry check", "nothing", "clean"] } }
+            {
+              "name": {
+                "value": "wet",
+                "synonyms": ["pee", "peed", "pee pee", "wet one", "just wet", "number one", "tinkle"]
+              }
+            },
+            {
+              "name": {
+                "value": "dirty",
+                "synonyms": [
+                  "poo", "poop", "pooped", "poopy", "soiled", "messy", "dirty one",
+                  "number two", "bowel movement", "stinky"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "both",
+                "synonyms": [
+                  "wet and dirty", "pee and poop", "mixed", "mixed one", "both wet and dirty",
+                  "number one and number two", "everything", "the works", "wet and poopy",
+                  "pee and poo", "poop and pee"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "dry",
+                "synonyms": ["dry check", "nothing", "clean", "still dry", "empty", "no change", "dry one"]
+              }
+            }
           ]
         },
         {
