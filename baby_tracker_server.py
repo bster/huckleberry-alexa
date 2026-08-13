@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import os
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
@@ -29,6 +31,15 @@ HUCKLEBERRY_TIMEZONE = os.getenv("HUCKLEBERRY_TIMEZONE", "America/New_York")
 
 ALEXA_SKILL_ID = "amzn1.ask.skill.9e90f9f8-d095-4378-bef9-5c9830317c3c"
 
+# The Alexa skill's HTTPS endpoint is hardcoded in the Amazon developer console to
+# this Tailscale Funnel hostname. Tailscale can silently re-register this Mac under
+# a new hostname (e.g. a stale daemon reconnecting as "-1") without ever going
+# offline, which breaks the skill with no local symptom — the server looks healthy.
+# See README.md "Tailscale hostname" section.
+EXPECTED_TAILSCALE_HOSTNAME = os.getenv("EXPECTED_TAILSCALE_HOSTNAME", "benss-mac-mini-1.tailbded15.ts.net")
+TAILSCALE_BIN = os.getenv("TAILSCALE_BIN") or shutil.which("tailscale") or "/opt/homebrew/bin/tailscale"
+TAILSCALE_HOSTNAME_CHECK_INTERVAL_S = 30 * 60
+
 BottleType = Literal["Breast Milk", "Formula", "Tube Feeding", "Cow Milk", "Goat Milk", "Soy Milk", "Other"]
 
 _api: HuckleberryAPI | None = None
@@ -38,6 +49,7 @@ _children: list[dict] = []         # [{index, cid, nickname}, ...]
 _last_event: dict | None = None
 _bootstrap_error: str | None = "not started"   # None once Huckleberry auth succeeds
 _last_alexa: dict | None = None                # last request Alexa actually delivered
+_tailscale_hostname_status: dict | None = None  # last check: {checked_at, expected, actual, matches} or {..., error}
 
 
 def _now() -> datetime:
@@ -358,6 +370,61 @@ async def _bootstrap_forever() -> None:
             delay = min(delay * 2, 300)
 
 
+async def _check_tailscale_hostname() -> None:
+    """Compare this node's live Tailscale DNS name against EXPECTED_TAILSCALE_HOSTNAME.
+
+    Tailscale reassigns the hostname (e.g. appending "-1") when this Mac re-registers
+    as a node, which happens silently on things like a daemon restart after stale
+    control-plane state — no downtime, no crash, just a dead Alexa endpoint until
+    someone thinks to check `tailscale status`. This makes that divergence loud
+    instead of mysterious.
+    """
+    global _tailscale_hostname_status
+    checked_at = _now_iso()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            TAILSCALE_BIN, "status", "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            raise RuntimeError((stderr or stdout).decode(errors="replace")[:300])
+        data = json.loads(stdout)
+        actual = (data.get("Self", {}).get("DNSName") or "").rstrip(".")
+        matches = actual == EXPECTED_TAILSCALE_HOSTNAME
+        _tailscale_hostname_status = {
+            "checked_at": checked_at,
+            "expected": EXPECTED_TAILSCALE_HOSTNAME,
+            "actual": actual,
+            "matches": matches,
+        }
+        if not matches:
+            logger.error(
+                "TAILSCALE HOSTNAME MISMATCH: this node is now %r but the Alexa skill "
+                "endpoint is configured for %r. Voice commands will fail until the "
+                "skill's HTTPS endpoint is updated in the Amazon developer console. "
+                "See README.md \"Tailscale hostname\" for the fix.",
+                actual, EXPECTED_TAILSCALE_HOSTNAME,
+            )
+    except Exception as err:  # noqa: BLE001 - a failed check must not crash the server
+        detail = f"{type(err).__name__}: {err}"[:300]
+        _tailscale_hostname_status = {
+            "checked_at": checked_at,
+            "expected": EXPECTED_TAILSCALE_HOSTNAME,
+            "actual": None,
+            "matches": None,
+            "error": detail,
+        }
+        logger.warning("Tailscale hostname check failed (%s)", detail)
+
+
+async def _tailscale_hostname_watch_forever() -> None:
+    while True:
+        await _check_tailscale_hostname()
+        await asyncio.sleep(TAILSCALE_HOSTNAME_CHECK_INTERVAL_S)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _api, _http_session
@@ -369,8 +436,10 @@ async def lifespan(app: FastAPI):
         websession=_http_session,
     )
     task = asyncio.create_task(_bootstrap_forever())
+    hostname_task = asyncio.create_task(_tailscale_hostname_watch_forever())
     yield
     task.cancel()
+    hostname_task.cancel()
     await _http_session.close()
 
 
@@ -486,6 +555,7 @@ async def status():
         # last_alexa answers the question the access log cannot: is Alexa still
         # delivering requests to us, or did the skill break on Amazon's side?
         "last_alexa": _last_alexa,
+        "tailscale_hostname": _tailscale_hostname_status,
     }
 
 
