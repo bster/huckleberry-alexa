@@ -15,6 +15,14 @@ load_dotenv()
 
 from huckleberry_api import HuckleberryAPI  # noqa: E402
 
+# Timestamps matter here: this runs unattended under launchd, and without them
+# the logs cannot answer "when did Alexa last reach us?" during an outage.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S %z",
+)
+
 logger = logging.getLogger(__name__)
 
 HUCKLEBERRY_TIMEZONE = os.getenv("HUCKLEBERRY_TIMEZONE", "America/New_York")
@@ -29,6 +37,7 @@ _child_uid: str | None = None      # default child (from HUCKLEBERRY_CHILD_INDEX
 _children: list[dict] = []         # [{index, cid, nickname}, ...]
 _last_event: dict | None = None
 _bootstrap_error: str | None = "not started"   # None once Huckleberry auth succeeds
+_last_alexa: dict | None = None                # last request Alexa actually delivered
 
 
 def _now() -> datetime:
@@ -470,9 +479,13 @@ class ActivityLogRequest(BaseModel):
 @app.get("/status")
 async def status():
     return {
-        "ok": True,
+        "ok": _bootstrap_error is None,
+        "huckleberry": "connected" if _bootstrap_error is None else _bootstrap_error,
         "default_child_uid": _child_uid,
         "last_event": _last_event,
+        # last_alexa answers the question the access log cannot: is Alexa still
+        # delivering requests to us, or did the skill break on Amazon's side?
+        "last_alexa": _last_alexa,
     }
 
 
@@ -751,6 +764,11 @@ async def alexa(request: Request) -> Any:
 
     req = body.get("request", {})
     req_type = req.get("type", "")
+
+    global _last_alexa
+    intent_label = req.get("intent", {}).get("name") or req_type
+    _last_alexa = {"at": _now_iso(), "type": req_type, "intent": intent_label}
+    logger.info("Alexa request: %s", intent_label)
 
     try:
         if req_type == "LaunchRequest":
