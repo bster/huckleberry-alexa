@@ -213,6 +213,7 @@ async def _do_sleep_end(child: int | str | None = None) -> dict:
 async def _do_diaper_log(
     diaper_type: str = "wet",
     child: int | str | None = None,
+    size: str | None = None,
     pee_amount: str | None = None,
     poo_amount: str | None = None,
 ) -> dict:
@@ -220,6 +221,17 @@ async def _do_diaper_log(
     child_uid = _resolve_child(child)
     type_to_mode = {"wet": "pee", "dirty": "poo", "both": "both", "dry": "dry"}
     mode = type_to_mode.get(diaper_type, "pee")
+
+    # A spoken size applies to whichever halves of the change actually happened;
+    # a dry diaper has nothing to size. Explicit pee_amount/poo_amount win, so a
+    # REST caller can still set the two sides independently.
+    if size is not None:
+        amount = DIAPER_SIZE_TO_AMOUNT[size]
+        if pee_amount is None and mode in ("pee", "both"):
+            pee_amount = amount
+        if poo_amount is None and mode in ("poo", "both"):
+            poo_amount = amount
+
     # Size is left unset unless the caller actually said one. Passing None makes
     # log_diaper omit the `quantity` field entirely, which is what the Huckleberry
     # app writes for a change logged without a size — inventing "medium" put a
@@ -231,8 +243,8 @@ async def _do_diaper_log(
         pee_amount=pee_amount,
         poo_amount=poo_amount,
     )
-    _record("diaper_log", {"type": diaper_type, "mode": mode, "child_uid": child_uid})
-    return {"mode": mode, "child_uid": child_uid}
+    _record("diaper_log", {"type": diaper_type, "mode": mode, "size": size, "child_uid": child_uid})
+    return {"mode": mode, "size": size, "child_uid": child_uid}
 
 
 async def _do_switch_side(child: int | str | None = None) -> dict:
@@ -828,6 +840,14 @@ DIAPER_TYPES = ("wet", "dirty", "both", "dry")
 # "both" reads badly in a spoken confirmation ("Logged a both diaper").
 DIAPER_SPEECH = {"wet": "wet", "dirty": "dirty", "both": "mixed", "dry": "dry"}
 
+DIAPER_SIZES = ("small", "medium", "large")
+
+# The spoken sizes map onto huckleberry_api's amount vocabulary, which is what
+# knows the app's on-the-wire encoding (a 0/50/100 scale). Naming the amount
+# rather than writing the number keeps that encoding in one place — the library —
+# instead of hardcoding magic constants here that would silently rot if it changed.
+DIAPER_SIZE_TO_AMOUNT = {"small": "little", "medium": "medium", "large": "big"}
+
 
 @app.post("/alexa")
 async def alexa(request: Request) -> Any:
@@ -925,8 +945,17 @@ async def alexa(request: Request) -> Any:
                         "I didn't catch what kind of diaper that was. "
                         "Say wet, dirty, mixed, or dry."
                     )
-                await _do_diaper_log(diaper_type=diaper_type)
-                return _alexa_response(f"Logged a {DIAPER_SPEECH[diaper_type]} diaper.")
+                # Size is optional: unresolved or unspoken means no size, never a
+                # substituted one. Only warn when something was actually said and
+                # could not be matched, so a genuinely size-less command stays quiet.
+                size = _resolve_slot(slots, "size", DIAPER_SIZES)
+                if size is None and _slot_spoken(slots, "size"):
+                    logger.warning("Unresolved size slot: %r", _slot_spoken(slots, "size"))
+                await _do_diaper_log(diaper_type=diaper_type, size=size)
+                spoken_type = DIAPER_SPEECH[diaper_type]
+                if size is not None and diaper_type != "dry":
+                    return _alexa_response(f"Logged a {size} {spoken_type} diaper.")
+                return _alexa_response(f"Logged a {spoken_type} diaper.")
 
             if intent_name == "StartSleepIntent":
                 await _do_sleep_start()

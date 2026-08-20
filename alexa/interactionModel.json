@@ -41,6 +41,10 @@
             {
               "name": "diaper_type",
               "type": "DiaperType"
+            },
+            {
+              "name": "size",
+              "type": "DiaperSize"
             }
           ],
           "samples": [
@@ -55,7 +59,17 @@
             "she had a {diaper_type}",
             "he had a {diaper_type}",
             "she {diaper_type}",
-            "he {diaper_type}"
+            "he {diaper_type}",
+            "log a {size} {diaper_type} diaper",
+            "log a {diaper_type} {size} diaper",
+            "{size} {diaper_type} diaper",
+            "log a {size} {diaper_type} diaper change",
+            "log a {size} diaper",
+            "diaper change {size} {diaper_type}",
+            "she had a {size} {diaper_type} diaper",
+            "he had a {size} {diaper_type} diaper",
+            "she had a {size} {diaper_type}",
+            "he had a {size} {diaper_type}"
           ]
         },
         {
@@ -306,6 +320,14 @@
           "values": [
             { "name": { "value": "breast milk", "synonyms": ["breast", "pumped"] } },
             { "name": { "value": "formula", "synonyms": ["formula milk"] } }
+          ]
+        },
+        {
+          "name": "DiaperSize",
+          "values": [
+            { "name": { "value": "small", "synonyms": ["little", "tiny", "teeny", "small one", "little one", "a little", "light", "slight", "a bit", "smallish", "not much", "barely anything"] } },
+            { "name": { "value": "medium", "synonyms": ["normal", "regular", "average", "moderate", "standard", "usual", "medium sized", "medium one", "middling", "normal sized"] } },
+            { "name": { "value": "large", "synonyms": ["big", "huge", "massive", "giant", "enormous", "blowout", "blow out", "big one", "really big", "heavy", "full", "extra large", "monster", "whopper", "major", "loaded", "soaked", "so big"] } }
           ]
         }
       ]

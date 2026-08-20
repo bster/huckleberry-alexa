@@ -29,6 +29,9 @@ You can use one-shot invocations like:
 - "Alexa, ask huckleberry to log a formula bottle"
 - "Alexa, ask huckleberry when was the last feeding"
 - "Alexa, ask huckleberry to log a wet diaper"
+- "Alexa, ask huckleberry to log a large mixed diaper"
+- "Alexa, ask huckleberry to log a small wet diaper"
+- "Alexa, ask huckleberry to log a blowout dirty diaper"
 - "Alexa, ask huckleberry when was the last diaper"
 - "Alexa, ask huckleberry to start sleep"
 - "Alexa, ask huckleberry to end sleep"
@@ -40,6 +43,34 @@ You can use one-shot invocations like:
 - "Alexa, ask huckleberry to log tummy time"
 - "Alexa, ask huckleberry to log 5 minutes of tummy time"
 - "Alexa, ask huckleberry to log a bath"
+
+### Diaper size
+
+Size is optional and never assumed. Say one — **small**, **medium**, or **large**,
+or a synonym like "little", "big", "huge", "blowout" — and it's recorded; say
+nothing and the record carries **no size field at all**, exactly like a diaper
+logged in the Huckleberry app without one. Both orderings work ("a large mixed
+diaper", "a mixed large diaper").
+
+Sizes map onto the app's 0–100 quantity scale:
+
+| said | stored as |
+|---|---|
+| small | `quantity: 0.0` |
+| medium | `quantity: 50.0` |
+| large | `quantity: 100.0` |
+| *(nothing said)* | no `quantity` field |
+
+For a mixed diaper the size applies to both halves (`{"pee": 100.0, "poo": 100.0}`).
+A dry diaper has nothing to size, so a size said with one is ignored.
+
+Those three numbers aren't guesses. Across 4,081 archived diaper records in this
+account written by the Huckleberry app itself — years before this server existed —
+`quantity` only ever takes the values **0.0, 50.0, and 100.0**, and 2,693 of those
+records carry no `quantity` field at all. Logging without a size is what the app
+does most of the time, which is why it is the default here too. (Older records use
+an earlier schema where `quantity` is a bare number rather than a per-side object,
+but the same three values.)
 
 ## How it works
 
