@@ -210,13 +210,20 @@ async def _do_sleep_end(child: int | str | None = None) -> dict:
     return {"child_uid": child_uid}
 
 
-async def _do_diaper_log(diaper_type: str = "wet", child: int | str | None = None) -> dict:
+async def _do_diaper_log(
+    diaper_type: str = "wet",
+    child: int | str | None = None,
+    pee_amount: str | None = None,
+    poo_amount: str | None = None,
+) -> dict:
     api = _get_api()
     child_uid = _resolve_child(child)
     type_to_mode = {"wet": "pee", "dirty": "poo", "both": "both", "dry": "dry"}
     mode = type_to_mode.get(diaper_type, "pee")
-    pee_amount: str | None = "medium" if mode in ("pee", "both") else None
-    poo_amount: str | None = "medium" if mode in ("poo", "both") else None
+    # Size is left unset unless the caller actually said one. Passing None makes
+    # log_diaper omit the `quantity` field entirely, which is what the Huckleberry
+    # app writes for a change logged without a size — inventing "medium" put a
+    # number in Jonah's record that nobody ever reported.
     await api.log_diaper(
         child_uid,
         start_time=_now(),
@@ -262,8 +269,13 @@ async def _do_pump_log(
     await api.log_pump(
         child_uid,
         start_time=_now(),
+        # log_pump rejects an entry with no amount at all, so an unstated amount
+        # still has to become 0.0 here — see the note in README about that.
         total_amount=amount_oz or 0.0,
-        duration=duration_minutes * 60 if duration_minutes else 0,
+        # Duration, unlike amount, is genuinely optional: log_pump omits it (and
+        # end_offset) when it is None. "Log a pump session" with no minutes said
+        # should record no duration, not a zero-minute session.
+        duration=duration_minutes * 60 if duration_minutes is not None else None,
         units="oz",
     )
     _record("pump_log", {"amount_oz": amount_oz, "duration_minutes": duration_minutes, "child_uid": child_uid})
@@ -325,7 +337,10 @@ async def _do_log_activity(
         child_uid,
         mode=mode,
         start_time=_now(),
-        duration=duration_minutes * 60 if duration_minutes else 0,
+        # "Log a bath" and "log tummy time" carry no duration. log_activity treats
+        # None as unrecorded and drops end_offset with it; 0 would claim the bath
+        # lasted no time at all.
+        duration=duration_minutes * 60 if duration_minutes is not None else None,
     )
     _record("activity_log", {"mode": mode, "duration_minutes": duration_minutes, "child_uid": child_uid})
     return {"mode": mode, "duration_minutes": duration_minutes, "child_uid": child_uid}
@@ -664,15 +679,13 @@ async def diaper_log(req: DiaperLogRequest = DiaperLogRequest()):
     type_to_mode = {"wet": "pee", "dirty": "poo", "both": "both", "dry": "dry"}
     mode = type_to_mode[req.type]
 
-    pee_amount = req.pee_amount or ("medium" if mode in ("pee", "both") else None)
-    poo_amount = req.poo_amount or ("medium" if mode in ("poo", "both") else None)
-
+    # No size unless the request carried one — see _do_diaper_log.
     await api.log_diaper(
         child_uid,
         start_time=_now(),
         mode=mode,
-        pee_amount=pee_amount,
-        poo_amount=poo_amount,
+        pee_amount=req.pee_amount,
+        poo_amount=req.poo_amount,
         color=req.color,
         consistency=req.consistency,
         notes=req.notes,
