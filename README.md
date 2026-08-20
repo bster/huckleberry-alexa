@@ -191,17 +191,86 @@ minutes, and:
    launchctl kickstart -k gui/$(id -u)/com.local.babytracker
    ```
 
-**Will the underlying re-registration happen again?** Possibly — the exact trigger
-(stale daemon control-plane state after weeks of uptime, resolved here with
-`tailscale down && tailscale up`) isn't something this project can prevent from the
-client side, and it isn't a well-documented "runs every N days" Tailscale failure
-mode either, so there's no schedule to defend against. If it does recur, the fix is
-the same one-liner:
+**Why the `-1` appeared — two Tailscale daemons.** The trigger used to be unclear.
+It isn't: this Mac runs *two* tailscaled instances at once, and they registered as
+two separate nodes.
+
 ```bash
-tailscale down && tailscale up
+ps aux | grep -i tailscale | grep -v grep
 ```
-The difference now is you'll be told immediately (loud log line + `/status`) instead
-of finding out next time you happen to test the skill.
+```
+/Applications/Tailscale.app/.../io.tailscale.ipn.macsys.network-extension   # utun9
+/opt/homebrew/opt/tailscale/bin/tailscaled                                  # utun0
+```
+```bash
+tailscale status
+```
+```
+100.96.243.74   benss-mac-mini-1   ← Tailscale.app; this is the node Funnel serves
+100.118.252.19  benss-mac-mini     ← Homebrew tailscaled; still online, serves nothing
+```
+
+The Homebrew daemon claimed `benss-mac-mini` first, so when the Mac App registered it
+had to take `benss-mac-mini-1` — which is exactly the hostname drift that broke the
+skill endpoint. Removing the redundant daemon prevents a recurrence; leaving both
+running means the next re-registration can shuffle the names again.
+
+## Intermittent "the skill is not available"
+
+Distinct from the hostname problem above: the skill works, then sporadically doesn't,
+then works again, with **nothing in the server log** — because the request never
+arrived. Two things on this machine cause that, and neither is visible from inside
+the server.
+
+**1. The default route drops, several times a day.** The Mac is on Wi-Fi (`en1`);
+`en0` Ethernet is cabled in the service order but unconfigured. The Homebrew
+tailscaled log is a convenient witness to a system-wide event:
+
+```bash
+grep "LinkChange: major" /opt/homebrew/var/log/tailscaled.log | tail
+```
+```
+LinkChange: major, rebinding: ... diff: DefaultRoute: ""->"en1" rebind-reason=[default-if-changed]
+```
+
+Every one of these is macOS momentarily having **no default route at all**. Each one
+tears down the control connection (`use of closed network connection`) and re-pings
+DERP. While that is happening, inbound Funnel traffic cannot reach this node, so
+Alexa gets nothing and tells you the skill is unavailable — and the server, which was
+never contacted, logs nothing. Frequency has been climbing: 1–4/day through Aug 18,
+8 on Aug 19, 12 on Aug 20.
+
+The durable fix is to **put the Mac on Ethernet** (`en0` is already first in the
+service order — it just needs a cable and DHCP). Removing the second tailscaled also
+helps: two daemons both rewriting system DNS and both competing for NAT port mappings
+against the same router doubles the reconfiguration churn.
+
+**2. Not latency.** Worth ruling out explicitly, because it looks like the obvious
+suspect. Alexa's budget is ~8s; measured against the real Funnel path:
+
+| where | p50 | p95 | max | over 8s |
+|---|---|---|---|---|
+| end-to-end through Funnel (111 samples) | 349ms | 476ms | 1311ms | 0 |
+| server-side handler (112 samples) | 195ms | 295ms | 351ms | 0 |
+
+That is roughly 20x under budget. The Firebase token refresh that used to happen
+inline costs ~50ms, and the Firestore read right after it ~300ms versus ~235ms warm —
+so it was never the multi-second stall it looked like from outside. It has been moved
+to a background task anyway (see `_session_keepalive_forever`), and it no longer
+matters which request lands in the token's last five minutes.
+
+**Reading the latency yourself:**
+```bash
+curl -s localhost:8765/status | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['alexa_latency'], indent=2))"
+```
+`alexa_latency` holds p50/p95/max over a rolling 300-request window plus the five
+slowest. Every request also logs its own duration:
+```
+Alexa request done: LogDiaperIntent outcome=ok 243ms (token_ttl=3456.5s)
+```
+Anything over 3s logs a `WARNING`; anything over 8s logs an `ERROR` saying the user
+heard a failure. So if the skill fails and there is **no** such line, the request
+never reached this machine — look at the network, not the server.
 
 ## Notes
 
