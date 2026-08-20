@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import shutil
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
@@ -40,6 +42,23 @@ EXPECTED_TAILSCALE_HOSTNAME = os.getenv("EXPECTED_TAILSCALE_HOSTNAME", "benss-ma
 TAILSCALE_BIN = os.getenv("TAILSCALE_BIN") or shutil.which("tailscale") or "/opt/homebrew/bin/tailscale"
 TAILSCALE_HOSTNAME_CHECK_INTERVAL_S = 30 * 60
 
+# Alexa abandons a skill response after roughly 8 seconds and tells the user the
+# skill is unavailable. Anything past this threshold is logged loudly, because
+# from Alexa's side it is indistinguishable from the server being down.
+ALEXA_BUDGET_MS = 8000
+ALEXA_SLOW_MS = 3000
+
+# Firebase ID tokens last an hour. huckleberry_api refreshes lazily, inside
+# whichever request happens to land in the last 5 minutes of that hour — and the
+# refresh also throws away the Firestore gRPC channel, so that one unlucky
+# request pays a token round-trip plus a fresh channel handshake. Refreshing from
+# a background task on a wider margin keeps that cost off the request path.
+SESSION_KEEPALIVE_INTERVAL_S = 60
+TOKEN_REFRESH_MARGIN_S = 10 * 60
+# An idle gRPC channel gets reaped by NAT/keepalive timeouts, which is what makes
+# the first request after a quiet stretch slow. A cheap periodic read keeps it hot.
+FIRESTORE_WARM_INTERVAL_S = 4 * 60
+
 BottleType = Literal["Breast Milk", "Formula", "Tube Feeding", "Cow Milk", "Goat Milk", "Soy Milk", "Other"]
 
 _api: HuckleberryAPI | None = None
@@ -50,6 +69,8 @@ _last_event: dict | None = None
 _bootstrap_error: str | None = "not started"   # None once Huckleberry auth succeeds
 _last_alexa: dict | None = None                # last request Alexa actually delivered
 _tailscale_hostname_status: dict | None = None  # last check: {checked_at, expected, actual, matches} or {..., error}
+_alexa_timings: deque[dict] = deque(maxlen=300)  # rolling per-request latency window
+_session_keepalive_status: dict | None = None    # last proactive refresh / warm result
 
 
 def _now() -> datetime:
@@ -63,6 +84,68 @@ def _now_iso() -> str:
 def _record(event_type: str, details: dict | None = None) -> None:
     global _last_event
     _last_event = {"type": event_type, "timestamp": _now_iso(), **(details or {})}
+
+
+def _token_ttl_s() -> float | None:
+    """Seconds until the Firebase ID token expires, or None if not authenticated."""
+    expires_at = getattr(_api, "token_expires_at", None) if _api else None
+    if expires_at is None:
+        return None
+    return round(expires_at - datetime.now().timestamp(), 1)
+
+
+def _record_timing(intent: str, elapsed_ms: float, outcome: str, token_ttl_s: float | None) -> None:
+    """Log and retain how long one Alexa request took.
+
+    Alexa reports a slow skill and a dead skill identically ("that skill is not
+    available"), so without a per-request duration in the log there is no way to
+    tell a timeout from an outage after the fact. token_ttl rides along because a
+    lazy token refresh landing inside a request is the most likely way for one to
+    blow past Alexa's budget.
+    """
+    entry = {
+        "at": _now_iso(),
+        "intent": intent,
+        "ms": round(elapsed_ms, 1),
+        "outcome": outcome,
+        "token_ttl_s": token_ttl_s,
+    }
+    _alexa_timings.append(entry)
+    message = "Alexa request done: %s outcome=%s %.0fms (token_ttl=%ss)"
+    args = (intent, outcome, elapsed_ms, token_ttl_s)
+    if elapsed_ms >= ALEXA_BUDGET_MS:
+        logger.error(
+            message + " — OVER Alexa's ~%dms budget; the user heard a failure.",
+            *args, ALEXA_BUDGET_MS,
+        )
+    elif elapsed_ms >= ALEXA_SLOW_MS:
+        logger.warning(message + " — slow, approaching Alexa's ~%dms budget.", *args, ALEXA_BUDGET_MS)
+    else:
+        logger.info(message, *args)
+
+
+def _timing_summary() -> dict:
+    """Latency distribution over the retained window, for /status."""
+    samples = list(_alexa_timings)
+    if not samples:
+        return {"count": 0}
+    durations = sorted(s["ms"] for s in samples)
+
+    def pct(p: float) -> float:
+        # Nearest-rank; the window is small enough that interpolation adds nothing.
+        return durations[min(len(durations) - 1, int(p / 100 * len(durations)))]
+
+    return {
+        "count": len(durations),
+        "window_start": samples[0]["at"],
+        "p50_ms": pct(50),
+        "p95_ms": pct(95),
+        "max_ms": durations[-1],
+        "over_budget": sum(1 for d in durations if d >= ALEXA_BUDGET_MS),
+        "slow": sum(1 for d in durations if d >= ALEXA_SLOW_MS),
+        "slowest": sorted(samples, key=lambda s: s["ms"], reverse=True)[:5],
+        "recent": samples[-10:],
+    }
 
 
 def _get_api() -> HuckleberryAPI:
@@ -371,6 +454,12 @@ async def _bootstrap() -> None:
     _child_uid = user_doc.childList[child_index].cid
     _bootstrap_error = None
     logger.info("Huckleberry ready — default child %s", _child_uid)
+    # Open the Firestore channel now rather than making the first voice command
+    # of the day pay for it.
+    try:
+        logger.info("Firestore warmed in %.0fms", await _warm_firestore())
+    except Exception as err:  # noqa: BLE001 - warming is best-effort
+        logger.warning("Initial Firestore warm failed (%s); the keepalive will retry", err)
 
 
 async def _bootstrap_forever() -> None:
@@ -395,6 +484,74 @@ async def _bootstrap_forever() -> None:
             logger.error("Huckleberry startup failed (%s); retrying in %ss", _bootstrap_error, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 300)
+
+
+async def _warm_firestore() -> float:
+    """Issue the cheapest real Firestore read there is, and return how long it took.
+
+    Doubles as the thing that rebuilds the gRPC channel: refresh_session_token()
+    drops the cached client, and a channel that has sat idle gets dropped by the
+    network anyway. Doing the reconnect here means an Alexa request never does.
+    """
+    api = _get_api()
+    child_uid = _resolve_child(None)
+    started = time.perf_counter()
+    now = _now()
+    await api.list_diaper_intervals(
+        child_uid,
+        start_time=now - timedelta(minutes=2),
+        end_time=now,
+    )
+    return (time.perf_counter() - started) * 1000
+
+
+async def _session_keepalive_forever() -> None:
+    """Refresh the Firebase token and keep the Firestore channel hot, off the request path.
+
+    Left alone, huckleberry_api refreshes the token lazily from inside a request
+    (see _ensure_authenticated), which puts a token round-trip and a full Firestore
+    channel rebuild in front of whichever Alexa request happens to arrive in the
+    last five minutes of the token's hour. That request can exceed Alexa's ~8s
+    budget, and the user hears "that skill is not available" — intermittently, and
+    with nothing in the log to explain it.
+    """
+    global _session_keepalive_status
+    last_warm = 0.0
+    while True:
+        await asyncio.sleep(SESSION_KEEPALIVE_INTERVAL_S)
+        if _api is None or _bootstrap_error is not None:
+            continue
+        try:
+            refreshed = False
+            refresh_ms: float | None = None
+            ttl = _token_ttl_s()
+            if ttl is not None and ttl <= TOKEN_REFRESH_MARGIN_S:
+                started = time.perf_counter()
+                await _api.refresh_session_token()
+                refresh_ms = (time.perf_counter() - started) * 1000
+                refreshed = True
+
+            warm_ms: float | None = None
+            if refreshed or (time.monotonic() - last_warm) >= FIRESTORE_WARM_INTERVAL_S:
+                warm_ms = await _warm_firestore()
+                last_warm = time.monotonic()
+
+            if refreshed:
+                logger.info(
+                    "Proactive token refresh: refresh=%.0fms warm=%.0fms new_ttl=%ss",
+                    refresh_ms, warm_ms or 0.0, _token_ttl_s(),
+                )
+            _session_keepalive_status = {
+                "checked_at": _now_iso(),
+                "token_ttl_s": _token_ttl_s(),
+                "refreshed": refreshed,
+                "refresh_ms": round(refresh_ms, 1) if refresh_ms is not None else None,
+                "warm_ms": round(warm_ms, 1) if warm_ms is not None else None,
+            }
+        except Exception as err:  # noqa: BLE001 - keepalive must never kill the server
+            detail = f"{type(err).__name__}: {str(err).split(', url=')[0]}"[:300]
+            logger.warning("Session keepalive failed (%s); will retry", detail)
+            _session_keepalive_status = {"checked_at": _now_iso(), "error": detail}
 
 
 async def _check_tailscale_hostname() -> None:
@@ -464,9 +621,11 @@ async def lifespan(app: FastAPI):
     )
     task = asyncio.create_task(_bootstrap_forever())
     hostname_task = asyncio.create_task(_tailscale_hostname_watch_forever())
+    keepalive_task = asyncio.create_task(_session_keepalive_forever())
     yield
     task.cancel()
     hostname_task.cancel()
+    keepalive_task.cancel()
     await _http_session.close()
 
 
@@ -583,6 +742,11 @@ async def status():
         # delivering requests to us, or did the skill break on Amazon's side?
         "last_alexa": _last_alexa,
         "tailscale_hostname": _tailscale_hostname_status,
+        # Latency is the difference between a skill that works and one Alexa
+        # declares unavailable, so it belongs in the health check.
+        "alexa_latency": _timing_summary(),
+        "session_keepalive": _session_keepalive_status,
+        "token_ttl_s": _token_ttl_s(),
     }
 
 
@@ -851,6 +1015,30 @@ DIAPER_SIZE_TO_AMOUNT = {"small": "little", "medium": "medium", "large": "big"}
 
 @app.post("/alexa")
 async def alexa(request: Request) -> Any:
+    """Time every Alexa request.
+
+    Alexa's ~8s budget is invisible in uvicorn's access log — a request that took
+    12 seconds and one that took 200ms both log as "200 OK", while the user heard
+    a failure in the first case. The wrapper exists so that duration always lands
+    in the log, whichever branch below returns.
+    """
+    started = time.perf_counter()
+    timing = {"intent": "unparsed", "outcome": "ok"}
+    try:
+        return await _alexa_dispatch(request, timing)
+    except Exception:
+        timing["outcome"] = "raised"
+        raise
+    finally:
+        _record_timing(
+            timing["intent"],
+            (time.perf_counter() - started) * 1000,
+            timing["outcome"],
+            _token_ttl_s(),
+        )
+
+
+async def _alexa_dispatch(request: Request, timing: dict[str, str]) -> Any:
     try:
         body = await request.json()
     except Exception:
@@ -863,6 +1051,7 @@ async def alexa(request: Request) -> Any:
     )
     if app_id != ALEXA_SKILL_ID:
         logger.warning("Rejected request with applicationId: %s", app_id)
+        timing["outcome"] = "rejected"
         raise HTTPException(status_code=403, detail="Invalid application ID")
 
     req = body.get("request", {})
@@ -871,6 +1060,7 @@ async def alexa(request: Request) -> Any:
     global _last_alexa
     intent_label = req.get("intent", {}).get("name") or req_type
     _last_alexa = {"at": _now_iso(), "type": req_type, "intent": intent_label}
+    timing["intent"] = intent_label
     logger.info("Alexa request: %s", intent_label)
 
     try:
@@ -1038,6 +1228,7 @@ async def alexa(request: Request) -> Any:
 
     except HTTPException as err:
         if err.status_code == 503:
+            timing["outcome"] = "huckleberry_down"
             logger.error("Alexa request while Huckleberry is disconnected: %s", err.detail)
             return _alexa_response(
                 "I can't reach Huckleberry right now. Please try again in a minute."
@@ -1045,6 +1236,7 @@ async def alexa(request: Request) -> Any:
         raise
 
     except Exception:
+        timing["outcome"] = "error"
         logger.exception("Alexa handler error")
         return _alexa_response("Sorry, something went wrong. Please try again.")
 
