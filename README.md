@@ -136,6 +136,47 @@ curl https://your-machine.tailnet.ts.net/status
 
 In the Alexa app on your phone: More → Skills & Games → Your Skills → Dev tab → find the skill → enable it.
 
+## Working on this without taking Alexa down
+
+**launchd runs uvicorn straight out of this working directory.** There is no build
+step and no deploy artifact, so every save to `baby_tracker_server.py` edits
+production, and a file saved mid-thought is a file the next restart will try to
+import. Worse, the plist sets `KeepAlive=true` with `ThrottleInterval=10`: a syntax
+error makes uvicorn exit 1, launchd relaunches it ten seconds later into the same
+error, and Alexa has no endpoint until someone notices. Verified — a deliberately
+broken file exits 1 on import.
+
+So don't edit the live file. Work in a second checkout on a second port:
+
+```bash
+git worktree add ../baby-tracker-dev -b my-change
+cd ../baby-tracker-dev
+ln -s ../baby-tracker/.env  .env      # same Huckleberry account
+ln -s ../baby-tracker/.venv .venv     # same deps, no second install
+./run-dev.sh                          # 127.0.0.1:8766
+```
+
+`run-dev.sh` binds to loopback on **8766**. The funnel only proxies `/alexa` to
+**8765**, so the dev instance is unreachable from Alexa no matter what state its
+code is in. It's a separate file (separate inode), so editing it cannot touch the
+running service.
+
+Point tests at `http://localhost:8766/alexa` with real Alexa payloads. It writes to
+the real Huckleberry account — that's the point, since the thing worth verifying is
+what lands in Firestore — so delete test records afterwards and repoint
+`prefs.lastDiaper` at the newest real one.
+
+When it's proven, merge and cut over **once**:
+
+```bash
+cd ../baby-tracker && git merge my-change && ./restart.sh
+```
+
+`restart.sh` compiles `baby_tracker_server.py` and validates the interaction model
+JSON *before* touching launchd, and refuses to restart if either fails — so a broken
+file leaves the old process serving instead of starting a crash loop. It then polls
+`/status` until healthy. A clean cutover takes about a second.
+
 ## Troubleshooting
 
 If a voice command isn't working, check things in this order:

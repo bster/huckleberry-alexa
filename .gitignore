@@ -2,7 +2,10 @@
 __pycache__/
 *.pyc
 *.pyo
-.venv/
+.venv
 *.egg-info/
 .DS_Store
 uv.lock
+
+# development instance (see README: working on this without taking Alexa down)
+dev.log
