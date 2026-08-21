@@ -153,15 +153,15 @@ git worktree add ../baby-tracker-dev -b my-change
 cd ../baby-tracker-dev
 ln -s ../baby-tracker/.env  .env      # same Huckleberry account
 ln -s ../baby-tracker/.venv .venv     # same deps, no second install
-./run-dev.sh                          # 127.0.0.1:8766
+./run-dev.sh                          # 127.0.0.1:8767
 ```
 
-`run-dev.sh` binds to loopback on **8766**. The funnel only proxies `/alexa` to
+`run-dev.sh` binds to loopback on **8767**. The funnel only proxies `/alexa` to
 **8765**, so the dev instance is unreachable from Alexa no matter what state its
 code is in. It's a separate file (separate inode), so editing it cannot touch the
 running service.
 
-Point tests at `http://localhost:8766/alexa` with real Alexa payloads. It writes to
+Point tests at `http://localhost:8767/alexa` with real Alexa payloads. It writes to
 the real Huckleberry account — that's the point, since the thing worth verifying is
 what lands in Firestore — so delete test records afterwards and repoint
 `prefs.lastDiaper` at the newest real one.
