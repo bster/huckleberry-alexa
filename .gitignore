@@ -9,3 +9,6 @@ uv.lock
 
 # development instance (see README: working on this without taking Alexa down)
 dev.log
+
+# sleep_report.py output — the kids' sleep data
+sleep_reports/
