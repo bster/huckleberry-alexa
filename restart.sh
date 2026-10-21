@@ -17,7 +17,7 @@ LABEL="gui/$(id -u)/com.local.babytracker"
 PY=.venv/bin/python
 
 echo "==> compiling"
-for f in baby_tracker_server.py sleep_report.py; do
+for f in baby_tracker_server.py; do
     if ! "$PY" -m py_compile "$f"; then
         echo "REFUSING TO RESTART: $f does not compile. The running service is untouched." >&2
         exit 1

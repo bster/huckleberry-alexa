@@ -1,0 +1,6 @@
+.env
+.venv
+uv.lock
+__pycache__/
+# sleep_report.py output — the kids' sleep data
+sleep_reports/

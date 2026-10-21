@@ -8,9 +8,9 @@ merge it in.
 
 Read-only: nothing here writes to either account.
 
-    .venv/bin/python sleep_report.py                  # all history
-    .venv/bin/python sleep_report.py --since 2024-01-01
-    .venv/bin/python sleep_report.py --no-snoo
+    uv run sleep_report.py                  # all history
+    uv run sleep_report.py --since 2024-01-01
+    uv run sleep_report.py --no-snoo
 
 Output goes to sleep_reports/<timestamp>/ (gitignored — it holds the kids' data).
 """
@@ -33,7 +33,9 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from dotenv import load_dotenv
 
-load_dotenv()
+HERE = Path(__file__).resolve().parent
+# This folder's own .env only — never fall back to the Alexa server's.
+load_dotenv(HERE / ".env")
 
 from huckleberry_api import HuckleberryAPI  # noqa: E402
 
@@ -500,7 +502,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--since", type=date.fromisoformat, default=date(2010, 1, 1),
                         help="earliest date to fetch (YYYY-MM-DD); default: all history")
-    parser.add_argument("--out", type=Path, default=Path("sleep_reports"))
+    parser.add_argument("--out", type=Path, default=HERE / "sleep_reports")
     parser.add_argument("--no-snoo", action="store_true", help="skip Happiest Baby")
     args = parser.parse_args()
 

@@ -313,55 +313,6 @@ Anything over 3s logs a `WARNING`; anything over 8s logs an `ERROR` saying the u
 heard a failure. So if the skill fails and there is **no** such line, the request
 never reached this machine — look at the network, not the server.
 
-## Comparing sleep across kids
-
-`sleep_report.py` is a separate, read-only script. It isn't part of the server. It
-pulls every sleep Huckleberry has for each child on the account and compares them
-**by age**, not by calendar date: everyone at 4 months, then everyone at 5 months,
-and so on.
-
-```bash
-.venv/bin/python sleep_report.py                    # all history
-.venv/bin/python sleep_report.py --since 2024-01-01
-.venv/bin/python sleep_report.py --no-snoo          # Huckleberry only
-```
-
-The same page is also served live by the Alexa server at **`/sleep`**, for viewing
-from a phone. Open `https://<this-mac>.<tailnet>.ts.net:8443/sleep` on any device
-signed in to your tailnet (the Tailscale app on the phone). Funnel only exposes
-`/alexa`, so `/sleep` is not on the public internet. It's built from the server's
-existing Huckleberry session, cached for 15 minutes, and rebuilt when you tap
-**Refresh**.
-
-It writes to `sleep_reports/<timestamp>/` (gitignored, since it holds the kids' data):
-
-- `report.html`: charts of total, night and nap sleep, naps per day, longest
-  stretch and night wakings, by month of age
-- `by_age_month.csv`, `daily.csv`, `sleeps.csv`: the same data at each level of detail
-
-The rules behind the numbers:
-
-- **Night sleep** is a sleep that starts between 18:00 and 06:00. Everything else is a nap.
-- **Sleep days** run from 06:00 to 06:00, so a night counts toward the evening it began.
-- **Averages** only include days with at least one sleep logged, so a gap in
-  logging doesn't drag the numbers down.
-- **Dropped sleeps:** anything over 16 hours (a timer left running) or with zero
-  length. The script logs how many it dropped.
-- **Birthdate required:** a child needs a birthdate in Huckleberry to appear in the
-  by-age comparison.
-
-Newborn sleep has no real night yet, so the night/nap split for the first couple of
-months is rough.
-
-### Happiest Baby (SNOO)
-
-If `SNOO_EMAIL` and `SNOO_PASSWORD` are in `.env`, the script also logs in to
-Happiest Baby and saves its raw history to `sleep_reports/<timestamp>/snoo/`.
-It doesn't interpret that data yet. There's no official API, and the unofficial
-library (python-snoo) only understands diaper and breastfeeding entries, so this
-first step finds out what else exists. `snoo/summary.txt` lists the entry types
-found per baby, and whether the old session-stats endpoints still answer.
-
 ## Notes
 
 This only works as a development-tier Alexa skill, meaning it's private to your Amazon account. You can't publish it — Huckleberry doesn't have an official API, so this is purely for personal use.
