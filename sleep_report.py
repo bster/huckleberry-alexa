@@ -18,6 +18,7 @@ Output goes to sleep_reports/<timestamp>/ (gitignored — it holds the kids' dat
 import argparse
 import asyncio
 import csv
+import html
 import inspect
 import json
 import logging
@@ -36,7 +37,6 @@ load_dotenv()
 
 from huckleberry_api import HuckleberryAPI  # noqa: E402
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("sleep_report")
 
 TZ = ZoneInfo(os.getenv("HUCKLEBERRY_TIMEZONE", "America/New_York"))
@@ -106,15 +106,11 @@ async def _list_sleep(api: HuckleberryAPI, cid: str, since: datetime, until: dat
     return await api.list_sleep_intervals(cid, start_time=since, end_time=until)
 
 
-async def fetch_huckleberry(session: aiohttp.ClientSession, since: datetime, until: datetime) -> tuple[list[dict], dict]:
-    """Return ([{cid, name, birthdate, intervals: [{start, duration}]}], account_info)."""
-    api = HuckleberryAPI(
-        email=os.environ["HUCKLEBERRY_EMAIL"],
-        password=os.environ["HUCKLEBERRY_PASSWORD"],
-        timezone=str(TZ),
-        websession=session,
-    )
-    await api.authenticate()
+async def fetch_children(api: HuckleberryAPI, since: datetime, until: datetime) -> tuple[list[dict], dict]:
+    """Return ([{cid, name, birthdate, intervals: [{start, duration}]}], account_info).
+
+    Takes an already-authenticated api so the server can reuse its own session.
+    """
     user_doc = await api.get_user()
     # hbChilds looks like Huckleberry's own link to Happiest Baby children. If
     # it's populated, SNOO sleep may already be syncing into Huckleberry.
@@ -141,6 +137,17 @@ async def fetch_huckleberry(session: aiohttp.ClientSession, since: datetime, unt
         logger.info("Huckleberry: %s — %d sleeps (born %s)", name, len(intervals), birthdate or "unknown")
         children.append({"cid": ref.cid, "name": name, "birthdate": birthdate, "intervals": intervals})
     return children, account_info
+
+
+async def fetch_huckleberry(session: aiohttp.ClientSession, since: datetime, until: datetime) -> tuple[list[dict], dict]:
+    api = HuckleberryAPI(
+        email=os.environ["HUCKLEBERRY_EMAIL"],
+        password=os.environ["HUCKLEBERRY_PASSWORD"],
+        timezone=str(TZ),
+        websession=session,
+    )
+    await api.authenticate()
+    return await fetch_children(api, since, until)
 
 
 # ------------------------------------------------------------------- analysis
@@ -395,7 +402,7 @@ HTML_TEMPLATE = """<!doctype html>
   }
   body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; margin:0; padding:24px 16px; }
   main { max-width:1100px; margin:0 auto; }
-  h1 { margin:0 0 4px; } p.meta { color:var(--muted); margin:0 0 24px; }
+  h1 { margin:0 0 4px; } .meta { color:var(--muted); margin:0 0 24px; } a { color:inherit; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
   .card h2 { font-size:15px; margin:0 0 8px; }
@@ -406,6 +413,7 @@ HTML_TEMPLATE = """<!doctype html>
 </style></head><body><main>
 <h1>Sleep comparison</h1>
 <p class="meta">__META__</p>
+__WARNINGS__
 <div class="grid" id="charts"></div>
 <div class="card" style="margin-top:16px"><h2>By month of age</h2><div class="scroll" id="table"></div></div>
 <script>
@@ -418,6 +426,7 @@ const charts = [
   ["avg_longest_stretch_hours", "Longest stretch (hours)"],
   ["avg_night_wakings", "Night wakings"],
 ];
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const kids = [...new Set(rows.map(r => r.child))];
 const colors = ["#3b6fd8", "#d8693b", "#2e9e6a", "#9b4fc9", "#c9a227"];
 const muted = getComputedStyle(document.documentElement).getPropertyValue("--muted");
@@ -449,20 +458,45 @@ for (const [key, title] of charts) {
 const cols = ["child", "age_month", "days_logged", "avg_total_hours", "avg_night_hours", "avg_nap_hours",
   "avg_naps", "avg_night_wakings", "avg_longest_stretch_hours", "avg_bedtime", "avg_wake_time"];
 document.getElementById("table").innerHTML = "<table><tr>" + cols.map(c => `<th>${c.replace(/_/g, " ")}</th>`).join("")
-  + "</tr>" + rows.map(r => "<tr>" + cols.map(c => `<td>${r[c] ?? ""}</td>`).join("") + "</tr>").join("") + "</table>";
+  + "</tr>" + rows.map(r => "<tr>" + cols.map(c => `<td>${esc(r[c])}</td>`).join("") + "</tr>").join("") + "</table>";
 </script></main></body></html>
 """
 
 
-def write_html(path: Path, age_rows: list[dict], meta: str) -> None:
-    html = HTML_TEMPLATE.replace("__META__", meta).replace("__ROWS__", json.dumps(age_rows))
-    path.write_text(html)
+def render_html(age_rows: list[dict], meta: str, warnings: list[str]) -> str:
+    # "<" escaped so nothing in a child's name can close the <script> block.
+    rows = json.dumps(age_rows).replace("<", "\\u003c")
+    notes = "".join(f"<li>{html.escape(w)}</li>" for w in warnings)
+    return (HTML_TEMPLATE.replace("__META__", meta)
+            .replace("__WARNINGS__", f'<ul class="meta">{notes}</ul>' if notes else "")
+            .replace("__ROWS__", rows))
+
+
+def build_report(children: list[dict], refresh_link: bool = False) -> dict:
+    """Everything the CSVs and the HTML page are made from, plus warnings worth showing."""
+    sleeps, skipped = build_sleeps(children)
+    days = daily_summary(sleeps)
+    ages = by_age_summary(days)
+    warnings = [
+        f"{c['name']} has no birthdate in Huckleberry, so isn't in the by-age comparison."
+        for c in children if c["birthdate"] is None
+    ] + [f"Skipped {n} {reason} sleep(s) for {name}." for (name, reason), n in sorted(skipped.items())]
+    meta = (f"Huckleberry, {len(sleeps)} sleeps across {len({s.child for s in sleeps})} children. "
+            f"Night = sleep starting {NIGHT_START:%H:%M}–{NIGHT_END:%H:%M}; only days with something logged "
+            f"are averaged. Generated {datetime.now(tz=TZ):%Y-%m-%d %H:%M}.")
+    if refresh_link:
+        meta += ' <a href="?refresh=1">Refresh</a>'
+    return {
+        "sleeps": sleeps, "days": days, "ages": ages, "warnings": warnings,
+        "html": render_html(ages, meta, warnings),
+    }
 
 
 # ----------------------------------------------------------------------- main
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--since", type=date.fromisoformat, default=date(2010, 1, 1),
                         help="earliest date to fetch (YYYY-MM-DD); default: all history")
@@ -478,27 +512,16 @@ async def main() -> None:
     async with aiohttp.ClientSession() as session:
         children, account_info = await fetch_huckleberry(session, since, until)
 
-        sleeps, skipped = build_sleeps(children)
-        days = daily_summary(sleeps)
-        ages = by_age_summary(days)
-
+        report = build_report(children)
         write_csv(out / "sleeps.csv", [
             {**asdict(s), "start": s.start.isoformat(), "end": s.end.isoformat(),
-             "hours": _hours(s.end - s.start)} for s in sleeps
+             "hours": _hours(s.end - s.start)} for s in report["sleeps"]
         ])
-        write_csv(out / "daily.csv", days)
-        write_csv(out / "by_age_month.csv", ages)
-        meta = (f"Huckleberry, {len(sleeps)} sleeps across {len({s.child for s in sleeps})} children. "
-                f"Night = sleep starting {NIGHT_START:%H:%M}–{NIGHT_END:%H:%M}; only days with something logged "
-                f"are averaged. Generated {datetime.now(tz=TZ):%Y-%m-%d %H:%M}.")
-        write_html(out / "report.html", ages, meta)
-
-        for child in children:
-            if child["birthdate"] is None:
-                logger.warning("%s has no birthdate in Huckleberry, so is missing from the by-age comparison",
-                               child["name"])
-        for (name, reason), n in sorted(skipped.items()):
-            logger.warning("Skipped %d %s sleep(s) for %s", n, reason, name)
+        write_csv(out / "daily.csv", report["days"])
+        write_csv(out / "by_age_month.csv", report["ages"])
+        (out / "report.html").write_text(report["html"])
+        for warning in report["warnings"]:
+            logger.warning(warning)
         if account_info["hbChilds"]:
             logger.info("Huckleberry account links %d Happiest Baby child(ren): %s",
                         len(account_info["hbChilds"]), ", ".join(account_info["hbChilds"]))

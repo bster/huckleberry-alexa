@@ -326,6 +326,13 @@ and so on.
 .venv/bin/python sleep_report.py --no-snoo          # Huckleberry only
 ```
 
+The same page is also served live by the Alexa server at **`/sleep`**, for viewing
+from a phone. Open `https://<this-mac>.<tailnet>.ts.net:8443/sleep` on any device
+signed in to your tailnet (the Tailscale app on the phone). Funnel only exposes
+`/alexa`, so `/sleep` is not on the public internet. It's built from the server's
+existing Huckleberry session, cached for 15 minutes, and rebuilt when you tap
+**Refresh**.
+
 It writes to `sleep_reports/<timestamp>/` (gitignored, since it holds the kids' data):
 
 - `report.html`: charts of total, night and nap sleep, naps per day, longest

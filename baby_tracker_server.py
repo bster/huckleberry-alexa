@@ -13,11 +13,14 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
 from huckleberry_api import HuckleberryAPI  # noqa: E402
+
+import sleep_report  # noqa: E402
 
 # Timestamps matter here: this runs unattended under launchd, and without them
 # the logs cannot answer "when did Alexa last reach us?" during an outage.
@@ -71,6 +74,13 @@ _last_alexa: dict | None = None                # last request Alexa actually del
 _tailscale_hostname_status: dict | None = None  # last check: {checked_at, expected, actual, matches} or {..., error}
 _alexa_timings: deque[dict] = deque(maxlen=300)  # rolling per-request latency window
 _session_keepalive_status: dict | None = None    # last proactive refresh / warm result
+
+# The sleep page reads every sleep ever logged for every child, which takes a few
+# seconds; caching it keeps a phone refresh from repeating that, and the lock
+# stops two phones opening it at once from doing it twice.
+SLEEP_PAGE_TTL_S = 15 * 60
+_sleep_page: tuple[float, str] | None = None     # (monotonic time built, html)
+_sleep_page_lock = asyncio.Lock()
 
 
 def _now() -> datetime:
@@ -757,6 +767,23 @@ async def list_children():
         "children": _children,
         "default_index": int(os.getenv("HUCKLEBERRY_CHILD_INDEX", "0")),
     }
+
+
+@app.get("/sleep", response_class=HTMLResponse)
+async def sleep_page(refresh: bool = False):
+    """Sleep comparison across all children, by age. Tailnet-only: the funnel exposes /alexa alone."""
+    global _sleep_page
+    api = _get_api()
+    async with _sleep_page_lock:
+        if refresh or _sleep_page is None or time.monotonic() - _sleep_page[0] > SLEEP_PAGE_TTL_S:
+            started = time.perf_counter()
+            children, _ = await sleep_report.fetch_children(
+                api, since=datetime(2010, 1, 1, tzinfo=timezone.utc), until=_now() + timedelta(minutes=5)
+            )
+            report = sleep_report.build_report(children, refresh_link=True)
+            _sleep_page = (time.monotonic(), report["html"])
+            logger.info("Sleep page built in %.0fms", (time.perf_counter() - started) * 1000)
+    return _sleep_page[1]
 
 
 @app.post("/feeding/start")
